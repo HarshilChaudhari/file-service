@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+asyncpg
+pydantic
+python-multipart
+python-magic
+alembic
+pyngrok
+nest-asyncio
