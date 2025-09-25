@@ -10,6 +10,7 @@ from app.config import BASE_DIR
 import uuid
 import os
 import magic
+import shutil
 
 app = FastAPI()
 storage = LocalStorage()  # our local storage handler
@@ -59,6 +60,7 @@ async def upload_file(
     file: UploadFile = File(...)
 ):
     async with async_session() as session:
+        # 1️⃣ Check if user exists
         result = await session.execute(
             FSUser.__table__.select().where(FSUser.code == user_code)
         )
@@ -67,12 +69,14 @@ async def upload_file(
             raise HTTPException(status_code=404, detail="User not found")
 
         user_config = user.configuration
+
+        # 2️⃣ Validate extension
         ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
         allowed_exts = [e.lower() for e in user_config.get("allowed_extensions", [])]
         if ext not in allowed_exts:
             raise HTTPException(status_code=400, detail=f"Extension '{ext}' not allowed")
 
-        # Detect real mime type
+        # 3️⃣ Detect real mime type
         content = await file.read()
         real_mime = magic.from_buffer(content, mime=True)
 
@@ -80,9 +84,20 @@ async def upload_file(
         if allowed_mime and real_mime not in allowed_mime:
             raise HTTPException(status_code=400, detail=f"MIME type '{real_mime}' not allowed")
 
-        # Save file
+        # 4️⃣ Check if file already exists for this user
+        existing_file = await session.execute(
+            FSFiles.__table__.select().where(
+                (FSFiles.user_id == user.id) &
+                (FSFiles.filename == file.filename)
+            )
+        )
+        if existing_file.fetchone():
+            raise HTTPException(status_code=400, detail="File already exists for this user")
+
+        # 5️⃣ Save file
         relative_path = await storage.save_file(user_code, file.filename, content)
 
+        # 6️⃣ Insert DB entry
         file_id = "fs_" + uuid.uuid4().hex[:8]
         new_file = FSFiles(
             id=file_id,
@@ -106,6 +121,7 @@ async def upload_file(
             "relative_path": new_file.relative_path,
             "absolute_path": abs_path
         }
+
 
 # -------------------------
 # File retrieval endpoints
@@ -138,20 +154,21 @@ async def get_file_metadata(file_id: str):
 async def download_file(file_id: str):
     async with async_session() as session:
         result = await session.execute(
-            select(FSFiles).where(FSFiles.id == file_id)
+            FSFiles.__table__.select().where(FSFiles.id == file_id)
         )
-        file = result.scalar_one_or_none()
-        if not file:
+        file_record = result.fetchone()
+        if not file_record:
             raise HTTPException(status_code=404, detail="File not found")
 
-        abs_path = os.path.join(BASE_DIR, file.relative_path)
+        abs_path = os.path.join(BASE_DIR, file_record.relative_path)
         if not os.path.exists(abs_path):
             raise HTTPException(status_code=404, detail="File not found on disk")
 
+        # ✅ Add filename so curl/wget/browser saves correctly
         return FileResponse(
-            path=abs_path,
-            filename=file.filename,
-            media_type=file.media_type or "application/octet-stream"
+            abs_path,
+            filename=file_record.filename,
+            media_type=file_record.media_type
         )
 
 
@@ -184,6 +201,81 @@ async def list_user_files(code: str):
                 "tag": f.tag,
                 "relative_path": f.relative_path,
                 "file_metadata": f.file_metadata,
+                # ✅ Add download URL
+                "download_url": f"/file/{f.id}/download"
             }
             for f in files
         ]
+
+# -------------------------
+# Delete a single file
+# -------------------------
+@app.delete("/file/{file_id}")
+async def delete_file(file_id: str):
+    async with async_session() as session:
+        # Find the file as ORM object
+        result = await session.execute(
+            select(FSFiles).where(FSFiles.id == file_id)
+        )
+        file = result.scalar_one_or_none()
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Compute absolute path
+        abs_path = os.path.abspath(os.path.join(BASE_DIR, file.relative_path))
+        print("Deleting file at:", abs_path)  # debug
+        if not os.path.exists(abs_path):
+            print("File not found on disk!")
+
+        # Delete from storage
+        await storage.delete_file(abs_path)
+
+        # Delete from DB
+        await session.delete(file)
+        await session.commit()
+
+        return {"message": f"File '{file.filename}' deleted successfully"}
+
+
+# -------------------------
+# Delete a user and all files
+# -------------------------
+@app.delete("/user/{code}")
+async def delete_user(code: str):
+    async with async_session() as session:
+        # 1️⃣ Find user as ORM object
+        result = await session.execute(
+            select(FSUser).where(FSUser.code == code)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # 2️⃣ Get all files for this user
+        result = await session.execute(
+            select(FSFiles).where(FSFiles.user_id == user.id)
+        )
+        files = result.scalars().all()
+
+        # 3️⃣ Delete files from storage and DB
+        for f in files:
+            abs_path = os.path.abspath(os.path.join(BASE_DIR, f.relative_path))
+            print("Deleting file at:", abs_path)  # debug
+            if not os.path.exists(abs_path):
+                print("File not found on disk!")
+            await storage.delete_file(abs_path)
+            await session.delete(f)
+
+        # 4️⃣ Delete user's folder from storage
+        user_dir = os.path.join(BASE_DIR, user.code)
+        if os.path.exists(user_dir):
+            print("Deleting user folder:", user_dir)
+            shutil.rmtree(user_dir)
+
+        # 5️⃣ Delete user from DB
+        await session.delete(user)
+        await session.commit()
+
+        return {"message": f"User '{code}' and all their files deleted successfully"}
+
+
