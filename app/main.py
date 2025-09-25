@@ -1,13 +1,15 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from app.db import async_session
 from app.models import FSUser, FSFiles
 from app.storage.local_storage import LocalStorage
+from app.config import BASE_DIR
 import uuid
-import mimetypes
-from datetime import datetime
 import os
+import magic
 
 app = FastAPI()
 storage = LocalStorage()  # our local storage handler
@@ -57,53 +59,131 @@ async def upload_file(
     file: UploadFile = File(...)
 ):
     async with async_session() as session:
-        # 1️⃣ Check if user exists
         result = await session.execute(
             FSUser.__table__.select().where(FSUser.code == user_code)
         )
         user = result.fetchone()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        user_config = user.configuration
 
-        # 2️⃣ Validate extension
+        user_config = user.configuration
         ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
         allowed_exts = [e.lower() for e in user_config.get("allowed_extensions", [])]
         if ext not in allowed_exts:
-            raise HTTPException(status_code=400, detail=f"Extension '{ext}' not allowed for this user")
+            raise HTTPException(status_code=400, detail=f"Extension '{ext}' not allowed")
 
-        # 3️⃣ Validate MIME type
-        mime_type = file.content_type
-        allowed_mime = user_config.get("allowed_media_types", [])
-        if allowed_mime and mime_type not in allowed_mime:
-            # allow if extension matches (user's responsibility)
-            if ext not in allowed_exts:
-                raise HTTPException(status_code=400, detail=f"MIME type '{mime_type}' not allowed for this user")
-
-        # 4️⃣ Save file (no file_kind)
+        # Detect real mime type
         content = await file.read()
-        file_path = await storage.save_file(user_code, None, file.filename, content)
+        real_mime = magic.from_buffer(content, mime=True)
 
-        # 5️⃣ Save DB entry
+        allowed_mime = user_config.get("allowed_media_types", [])
+        if allowed_mime and real_mime not in allowed_mime:
+            raise HTTPException(status_code=400, detail=f"MIME type '{real_mime}' not allowed")
+
+        # Save file
+        relative_path = await storage.save_file(user_code, file.filename, content)
+
         file_id = "fs_" + uuid.uuid4().hex[:8]
         new_file = FSFiles(
             id=file_id,
             user_id=user.id,
             filename=file.filename,
             size=len(content),
-            media_type=mime_type,
+            media_type=real_mime,
             tag=tag,
-            file_metadata={},  # user can update later
+            relative_path=relative_path,
+            file_metadata={},
         )
         session.add(new_file)
         await session.commit()
         await session.refresh(new_file)
 
+        abs_path = os.path.join(BASE_DIR, relative_path)
         return {
             "message": "File uploaded successfully",
             "file_id": new_file.id,
             "filename": new_file.filename,
-            "size": new_file.size,
-            "path": file_path
+            "relative_path": new_file.relative_path,
+            "absolute_path": abs_path
         }
+
+# -------------------------
+# File retrieval endpoints
+# -------------------------
+
+# 1️⃣ Metadata endpoint
+@app.get("/file/{file_id}")
+async def get_file_metadata(file_id: str):
+    async with async_session() as session:
+        result = await session.execute(
+            select(FSFiles).where(FSFiles.id == file_id)
+        )
+        file = result.scalar_one_or_none()
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        return {
+            "id": file.id,
+            "user_id": str(file.user_id),
+            "filename": file.filename,
+            "size": file.size,
+            "media_type": file.media_type,
+            "tag": file.tag,
+            "relative_path": file.relative_path,
+            "file_metadata": file.file_metadata,
+        }
+
+# 2️⃣ Download endpoint
+@app.get("/file/{file_id}/download")
+async def download_file(file_id: str):
+    async with async_session() as session:
+        result = await session.execute(
+            select(FSFiles).where(FSFiles.id == file_id)
+        )
+        file = result.scalar_one_or_none()
+        if not file:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        abs_path = os.path.join(BASE_DIR, file.relative_path)
+        if not os.path.exists(abs_path):
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        return FileResponse(
+            path=abs_path,
+            filename=file.filename,
+            media_type=file.media_type or "application/octet-stream"
+        )
+
+
+# -------------------------
+# List files for a user
+# -------------------------
+@app.get("/user/{code}/files")
+async def list_user_files(code: str):
+    async with async_session() as session:
+        # Find user
+        result = await session.execute(
+            select(FSUser).where(FSUser.code == code)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Get all files for this user
+        result = await session.execute(
+            select(FSFiles).where(FSFiles.user_id == user.id)
+        )
+        files = result.scalars().all()
+
+        return [
+            {
+                "id": f.id,
+                "filename": f.filename,
+                "size": f.size,
+                "media_type": f.media_type,
+                "tag": f.tag,
+                "relative_path": f.relative_path,
+                "file_metadata": f.file_metadata,
+            }
+            for f in files
+        ]

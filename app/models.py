@@ -24,6 +24,8 @@ class FSFiles(Base):
     size = Column(BigInteger, nullable=False)
     media_type = Column(String, nullable=False)
     tag = Column(String, nullable=True)
-    file_metadata = Column("metadata", JSONB, nullable=True)  # renamed Python attribute
+    relative_path = Column(String, nullable=False)   # <-- NEW COLUMN
+    file_metadata = Column("metadata", JSONB, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
 

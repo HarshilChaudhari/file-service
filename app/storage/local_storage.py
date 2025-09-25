@@ -5,28 +5,26 @@ from app.storage.base import BaseStorage
 
 class LocalStorage(BaseStorage):
 
-    async def save_file(self, user_code: str, file_kind: str, filename: str, content: bytes) -> str:
-        """
-        Save a file to the local filesystem under:
-        BASE_DIR / user_code / YEAR / MONTH_NAME / filename
-        """
+    async def save_file(self, user_code: str, filename: str, content: bytes) -> str:
         now = datetime.now()
-        month_name = now.strftime("%B")  # e.g., "September"
-        dir_path = os.path.join(BASE_DIR, user_code, str(now.year), month_name)
-        os.makedirs(dir_path, exist_ok=True)
+        month_name = now.strftime("%B")
+        relative_path = os.path.join(user_code, str(now.year), month_name, filename)
 
-        file_path = os.path.join(dir_path, filename)
-        with open(file_path, "wb") as f:
+        abs_path = os.path.join(BASE_DIR, relative_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+        with open(abs_path, "wb") as f:
             f.write(content)
-        return file_path
 
-    async def delete_file(self, file_path: str) -> None:
-        """Delete a file if it exists."""
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        return relative_path  # return only relative path
 
-    async def get_file_path(self, file_path: str) -> str:
-        """Return the file path if it exists, else None."""
-        if os.path.exists(file_path):
-            return file_path
+    async def delete_file(self, relative_path: str) -> None:
+        abs_path = os.path.join(BASE_DIR, relative_path)
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+
+    async def get_file_path(self, relative_path: str) -> str:
+        abs_path = os.path.join(BASE_DIR, relative_path)
+        if os.path.exists(abs_path):
+            return abs_path
         return None
