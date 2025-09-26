@@ -7,8 +7,8 @@ import uuid
 Base = declarative_base()
 
 
-class FSUser(Base):
-    __tablename__ = "fs_user"
+class FSTenant(Base):
+    __tablename__ = "fs_tenant"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code = Column(String, unique=True, nullable=False)
@@ -19,7 +19,7 @@ class FSFiles(Base):
     __tablename__ = "fs_files"
 
     id = Column(String, primary_key=True)  # e.g., fs_023abx45
-    user_id = Column(UUID(as_uuid=True), ForeignKey("fs_user.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("fs_tenant.id", ondelete="CASCADE"), nullable=False)
     filename = Column(String, nullable=False)
     size = Column(BigInteger, nullable=False)
     media_type = Column(String, nullable=False)

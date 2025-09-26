@@ -4,15 +4,27 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.db import async_session
-from app.models import FSUser, FSFiles
+from app.models import FSTenant, FSFiles
 from app.storage.local_storage import LocalStorage
 from app.config import BASE_DIR
 import uuid
 import os
+import pylibmagic
 import magic
 import shutil
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 storage = LocalStorage()  # our local storage handler
 
 # -------------------------
@@ -33,7 +45,7 @@ async def create_user(user: UserCreate):
     async with async_session() as session:
         async with session.begin():
             code = str(uuid.uuid4())[:8]
-            new_user = FSUser(code=code, configuration=user.configuration)
+            new_user = FSTenant(code=code, configuration=user.configuration)
             session.add(new_user)
         await session.commit()
         await session.refresh(new_user)
@@ -43,7 +55,7 @@ async def create_user(user: UserCreate):
 async def get_user(code: str):
     async with async_session() as session:
         result = await session.execute(
-            FSUser.__table__.select().where(FSUser.code == code)
+            FSTenant.__table__.select().where(FSTenant.code == code)
         )
         user = result.fetchone()
         if not user:
@@ -62,7 +74,7 @@ async def upload_file(
     async with async_session() as session:
         # 1️⃣ Check if user exists
         result = await session.execute(
-            FSUser.__table__.select().where(FSUser.code == user_code)
+            FSTenant.__table__.select().where(FSTenant.code == user_code)
         )
         user = result.fetchone()
         if not user:
@@ -180,7 +192,7 @@ async def list_user_files(code: str):
     async with async_session() as session:
         # Find user
         result = await session.execute(
-            select(FSUser).where(FSUser.code == code)
+            select(FSTenant).where(FSTenant.code == code)
         )
         user = result.scalar_one_or_none()
         if not user:
@@ -245,7 +257,7 @@ async def delete_user(code: str):
     async with async_session() as session:
         # 1️⃣ Find user as ORM object
         result = await session.execute(
-            select(FSUser).where(FSUser.code == code)
+            select(FSTenant).where(FSTenant.code == code)
         )
         user = result.scalar_one_or_none()
         if not user:

@@ -1,0 +1,18 @@
+[project]
+name = "file-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncpg>=0.30.0",
+    "fastapi>=0.117.1",
+    "greenlet>=3.2.4",
+    "nest-asyncio>=1.6.0",
+    "pydantic>=2.11.9",
+    "pylibmagic>=0.5.0",
+    "python-magic>=0.4.27",
+    "python-multipart>=0.0.20",
+    "sqlalchemy>=2.0.43",
+    "uvicorn>=0.37.0",
+]
